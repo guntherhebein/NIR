@@ -1,0 +1,43 @@
+body {
+    background-color: #f5f6f8;
+  }
+  
+  .result-card {
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+    height: 100%;
+  }
+  
+  .result-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  
+  .thumb-wrapper {
+    height: 180px;
+    background: #e9ecef;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 4px 4px 0 0;
+  }
+  
+  .thumb-wrapper img {
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+  }
+  
+  .thumb-placeholder {
+    font-size: 2.5rem;
+    color: #adb5bd;
+  }
+  
+  .card-body small.text-muted {
+    display: block;
+  }
+  
+  #pdfFrame {
+    min-height: 90vh;
+  }

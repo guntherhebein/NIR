@@ -1,0 +1,71 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: protocol_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"   # optional, kann entfernt werden
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  watcher:
+    build: ./watcher
+    container_name: protocol_watcher
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      SMB_SERVER: ${SMB_SERVER}
+      SMB_SHARE: ${SMB_SHARE}
+      SMB_USERNAME: ${SMB_USERNAME}
+      SMB_PASSWORD: ${SMB_PASSWORD}
+      SMB_DOMAIN: ${SMB_DOMAIN}
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB: ${MONGO_DB}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS}
+      RECHECK_DAYS: ${RECHECK_DAYS}
+      STORAGE_PATH: ${STORAGE_PATH}
+    volumes:
+      - storage:/storage
+    networks:
+      - backend
+
+  webapp:
+    build: ./webapp
+    container_name: protocol_webapp
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB: ${MONGO_DB}
+      STORAGE_PATH: ${STORAGE_PATH}
+    volumes:
+      - storage:/storage:ro
+    ports:
+      - "${WEB_PORT}:5000"
+    networks:
+      - backend
+
+volumes:
+  mongo-data:
+  storage:
+
+networks:
+  backend:
+    driver: bridge
