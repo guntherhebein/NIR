@@ -28,6 +28,7 @@ from pymongo.errors import DuplicateKeyError
 from pdf2image import convert_from_path
 
 from pdf_parser import extract_pdf_metadata
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 # --------------------------------------------------------------------------- #
 # Konfiguration ueber Umgebungsvariablen
@@ -69,6 +70,25 @@ FILENAME_PATTERN = re.compile(
 )
 YEAR_PATTERN = re.compile(r"^\d{4}$")
 DATE_PATTERN = re.compile(r"^\d{8}$")
+
+def _create_index_safe(col, keys, **kwargs):
+    """Erstellt einen Index; falls unter demselben Namen bereits ein Index mit
+    abweichenden Optionen existiert (z.B. nach Erweiterung der Text-Index-Felder
+    in einer neueren Version dieses Skripts), wird der alte Index gedroppt und
+    neu erstellt, statt mit OperationFailure (Code 85/86) abzubrechen."""
+    try:
+        col.create_index(keys, **kwargs)
+    except OperationFailure as exc:
+        if getattr(exc, "code", None) in (85, 86) and "name" in kwargs:
+            log.warning(
+                "Index '%s' existiert bereits mit abweichenden Optionen – wird neu erstellt.",
+                kwargs["name"],
+            )
+            col.drop_index(kwargs["name"])
+            col.create_index(keys, **kwargs)
+        else:
+            raise
+
 
 def update_status(meta_col, **fields):
     """Schreibt/aktualisiert einzelne Felder im Status-Dokument 'scanner'."""
@@ -255,15 +275,16 @@ def list_pdf_files(url: str):
 # MongoDB
 # --------------------------------------------------------------------------- #
 def ensure_indexes(col):
-    col.create_index([("relative_path", ASCENDING)], unique=True, name="uniq_relative_path")
-    col.create_index([("date", ASCENDING)], name="idx_date")
-    col.create_index([("device_number", ASCENDING)], name="idx_device")
-    col.create_index([("measurement_seq", ASCENDING)], name="idx_seq")
-    col.create_index([("benutzer", ASCENDING)], name="idx_benutzer")
-    col.create_index([("apotheke", ASCENDING)], name="idx_apotheke")
-    col.create_index([("pruefergebnis", ASCENDING)], name="idx_pruefergebnis")
-    col.create_index([("stoffklassenvalidierung", ASCENDING)], name="idx_validierung")
-    col.create_index(
+    _create_index_safe(col, [("relative_path", ASCENDING)], unique=True, name="uniq_relative_path")
+    _create_index_safe(col, [("date", ASCENDING)], name="idx_date")
+    _create_index_safe(col, [("device_number", ASCENDING)], name="idx_device")
+    _create_index_safe(col, [("measurement_seq", ASCENDING)], name="idx_seq")
+    _create_index_safe(col, [("benutzer", ASCENDING)], name="idx_benutzer")
+    _create_index_safe(col, [("apotheke", ASCENDING)], name="idx_apotheke")
+    _create_index_safe(col, [("pruefergebnis", ASCENDING)], name="idx_pruefergebnis")
+    _create_index_safe(col, [("stoffklassenvalidierung", ASCENDING)], name="idx_validierung")
+    _create_index_safe(
+        col,
         [("measurement_name", "text"), ("filename", "text"), ("apotheke", "text"), ("benutzer", "text")],
         name="idx_text_search",
         default_language="german",
