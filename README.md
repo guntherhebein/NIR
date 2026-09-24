@@ -15,3 +15,9 @@ NIR/
     ├── app.py
     ├── templates/index.html
     └── static/{style.css, app.js}
+
+    cp .env.example .env
+# .env anpassen (Passwörter, ggf. BASE_URL/Basic-Auth)
+docker compose up -d --build
+
+Danach unbedingt Browser-Cache leeren (Strg+Shift+R), da app.js sonst gecacht bleibt. Falls die Historie fehlt: curl -X POST http://<host>:8080/api/rescan erzwingt einen kompletten Neu-Scan aller Jahre/Ordner.

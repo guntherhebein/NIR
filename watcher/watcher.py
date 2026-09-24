@@ -110,51 +110,92 @@ def parse_filename(filename: str):
 # HTTP-Verzeichnis-Crawling (Apache/nginx Autoindex)
 # --------------------------------------------------------------------------- #
 def fetch_listing(url: str):
-    """Liefert Liste von (name_decoded, absolute_url, is_dir) fuer ein Verzeichnis."""
+    """Liefert Liste von (name_decoded, absolute_url, is_dir) fuer ein Verzeichnis.
+
+    Ein 404 (Ordner existiert nicht) ist ein voellig normaler, erwarteter Fall --
+    es muss nicht fuer jeden Tag einen Ordner geben (z.B. Wochenende, Feiertag,
+    oder es wurde an diesem Tag einfach noch nichts gemessen). Ein 404 wird
+    deshalb bewusst NICHT als WARNING geloggt, sondern nur auf DEBUG-Level.
+    Andere Fehler (Netzwerk, Timeout, 5xx, Auth) bleiben als WARNING sichtbar.
+
+    WICHTIG: Diese Funktion MUSS in jedem denkbaren Codepfad eine Liste
+    zurueckgeben (nie None) -- deshalb steht am Ende zusaetzlich eine
+    Sicherheitspruefung.
+    """
+    entries = []
     try:
         resp = session.get(url, timeout=HTTP_TIMEOUT, verify=HTTP_VERIFY_SSL)
+        if resp.status_code == 404:
+            log.debug("Verzeichnis existiert nicht (404, normal): %s", url)
+            return []
         resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if not href or href in ("../", "./") or href.startswith("?") or href.startswith("#"):
+                continue
+            if href.startswith("http://") or href.startswith("https://"):
+                # absolute Links auf andere Hosts/Pfade ignorieren
+                if not href.startswith(BASE_URL):
+                    continue
+            absolute_url = urljoin(url, href)
+            # 'Parent Directory'-Links (zeigen auf das aktuelle oder ein
+            # uebergeordnetes Verzeichnis) sowie Selbstverweise ausschliessen
+            if absolute_url.rstrip("/") == url.rstrip("/"):
+                continue
+            if not absolute_url.startswith(url):
+                continue
+            name_decoded = unquote(href.rstrip("/").split("/")[-1])
+            if not name_decoded:
+                continue
+            is_dir = href.endswith("/")
+            entries.append((name_decoded, absolute_url, is_dir))
+
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 404:
+            log.debug("Verzeichnis existiert nicht (404, normal): %s", url)
+        else:
+            log.warning("Konnte Verzeichnis nicht laden: %s (%s)", url, exc)
+        return []
     except Exception as exc:
         log.warning("Konnte Verzeichnis nicht laden: %s (%s)", url, exc)
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    entries = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not href or href in ("../", "./") or href.startswith("?") or href.startswith("#"):
-            continue
-        if href.startswith("http://") or href.startswith("https://"):
-            # absolute Links auf andere Hosts/Pfade ignorieren
-            if not href.startswith(BASE_URL):
-                continue
-        absolute_url = urljoin(url, href)
-        # 'Parent Directory'-Links (zeigen auf das aktuelle oder ein uebergeordnetes
-        # Verzeichnis) sowie Selbstverweise ausschliessen
-        if absolute_url.rstrip("/") == url.rstrip("/"):
-            continue
-        if not absolute_url.startswith(url):
-            continue
-        name_decoded = unquote(href.rstrip("/").split("/")[-1])
-        if not name_decoded:
-            continue
-        is_dir = href.endswith("/")
-        entries.append((name_decoded, absolute_url, is_dir))
-    return entries
+    # Sicherheitsnetz: entries ist durch die Initialisierung oben IMMER eine Liste,
+    # nie None -- diese Zeile ist reine Absicherung gegen zukuenftige Aenderungen.
+    return entries if entries is not None else []
 
 
 def list_dirs(url: str):
-    return [name for name, _, is_dir in fetch_listing(url) if is_dir]
+    """Liefert Liste aller Verzeichnisnamen unter url.
+
+    Manche Webserver/Autoindex-Skripte kennzeichnen Verzeichnis-Links im HTML
+    NICHT konsistent mit einem abschliessenden '/' im href-Attribut (z.B.
+    <a href="2022">2022</a> statt <a href="2022/">2022/</a>). Deshalb wird hier
+    NICHT ausschliesslich auf das is_dir-Flag vertraut, sondern zusaetzlich
+    jeder Eintrag als Ordner-Kandidat behandelt, der keine *.pdf-Datei ist.
+    Die Aufrufer filtern ohnehin zusaetzlich per Jahres-/Datums-Regex
+    (YEAR_PATTERN/DATE_PATTERN), daher ist das sicher -- z.B. eine readme.txt
+    im Verzeichnis wuerde hier kurz als Kandidat auftauchen, aber danach durch
+    den Regex-Filter wieder aussortiert.
+    """
+    listing = fetch_listing(url) or []
+    return [
+        name for name, _, is_dir in listing
+        if is_dir or not name.lower().endswith(".pdf")
+    ]
 
 
 def list_pdf_files(url: str):
     """Liefert Liste (filename_decoded, absolute_url) aller *.pdf in einem Verzeichnis."""
+    listing = fetch_listing(url) or []
     return [
         (name, abs_url)
-        for name, abs_url, is_dir in fetch_listing(url)
+        for name, abs_url, is_dir in listing
         if not is_dir and name.lower().endswith(".pdf")
     ]
-
 
 # --------------------------------------------------------------------------- #
 # MongoDB
