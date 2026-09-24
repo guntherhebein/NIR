@@ -10,6 +10,9 @@ Watcher-Prozess:
 - Neue PDFs werden heruntergeladen, lokal abgelegt (persistentes Volume /storage),
   ein Thumbnail der ersten Seite erzeugt, der PDF-Text-Inhalt strukturiert
   ausgelesen (siehe pdf_parser.py) und alles zusammen in MongoDB gespeichert
+- Waehrend des Laufs wird laufend ein detaillierter Fortschritts-Status in die
+  Collection 'scanner_state' geschrieben (Dokument _id='scanner'), damit die
+  Weboberflaeche live anzeigen kann, was gerade passiert.
 """
 
 import os
@@ -24,11 +27,10 @@ import requests
 from requests.auth import HTTPBasicAuth
 from bs4 import BeautifulSoup
 from pymongo import MongoClient, ASCENDING
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, OperationFailure
 from pdf2image import convert_from_path
 
 from pdf_parser import extract_pdf_metadata
-from pymongo.errors import DuplicateKeyError, OperationFailure
 
 # --------------------------------------------------------------------------- #
 # Konfiguration ueber Umgebungsvariablen
@@ -56,6 +58,16 @@ session = requests.Session()
 if HTTP_AUTH_USER:
     session.auth = HTTPBasicAuth(HTTP_AUTH_USER, HTTP_AUTH_PASS or "")
 
+
+# --------------------------------------------------------------------------- #
+# Status-Tracking (fuer Live-Anzeige in der Weboberflaeche)
+# --------------------------------------------------------------------------- #
+def update_status(meta_col, **fields):
+    """Schreibt/aktualisiert einzelne Felder im Status-Dokument 'scanner'."""
+    fields["updated_at"] = datetime.utcnow()
+    meta_col.update_one({"_id": "scanner"}, {"$set": fields}, upsert=True)
+
+
 # --------------------------------------------------------------------------- #
 # Dateiname-Parser
 # Beispiel: "2130000670 61 001073 Gruppe Triglyceride.pdf"
@@ -70,133 +82,6 @@ FILENAME_PATTERN = re.compile(
 )
 YEAR_PATTERN = re.compile(r"^\d{4}$")
 DATE_PATTERN = re.compile(r"^\d{8}$")
-
-def _create_index_safe(col, keys, **kwargs):
-    """Erstellt einen Index; falls unter demselben Namen bereits ein Index mit
-    abweichenden Optionen existiert (z.B. nach Erweiterung der Text-Index-Felder
-    in einer neueren Version dieses Skripts), wird der alte Index gedroppt und
-    neu erstellt, statt mit OperationFailure (Code 85/86) abzubrechen."""
-    try:
-        col.create_index(keys, **kwargs)
-    except OperationFailure as exc:
-        if getattr(exc, "code", None) in (85, 86) and "name" in kwargs:
-            log.warning(
-                "Index '%s' existiert bereits mit abweichenden Optionen – wird neu erstellt.",
-                kwargs["name"],
-            )
-            col.drop_index(kwargs["name"])
-            col.create_index(keys, **kwargs)
-        else:
-            raise
-
-
-def update_status(meta_col, **fields):
-    """Schreibt/aktualisiert einzelne Felder im Status-Dokument 'scanner'."""
-    fields["updated_at"] = datetime.utcnow()
-    meta_col.update_one({"_id": "scanner"}, {"$set": fields}, upsert=True)
-
-def scan_date_folder(col, year: str, date_folder: str, meta_col=None) -> int:
-    url = f"{BASE_URL}{year}/{date_folder}/"
-    count = 0
-    files = list_pdf_files(url)
-    for filename, file_url in files:
-        if meta_col is not None:
-            update_status(meta_col, current_file=filename)
-        try:
-            if process_file(col, year, date_folder, filename, file_url):
-                count += 1
-        except Exception:
-            log.error("Fehler bei Verarbeitung von %s/%s/%s:\n%s",
-                       year, date_folder, filename, traceback.format_exc())
-    if meta_col is not None:
-        update_status(meta_col, current_file=None)
-    return count
-
-def scan_date_folder(col, year: str, date_folder: str, meta_col=None) -> int:
-    url = f"{BASE_URL}{year}/{date_folder}/"
-    count = 0
-    files = list_pdf_files(url)
-    for filename, file_url in files:
-        if meta_col is not None:
-            update_status(meta_col, current_file=filename)
-        try:
-            if process_file(col, year, date_folder, filename, file_url):
-                count += 1
-        except Exception:
-            log.error("Fehler bei Verarbeitung von %s/%s/%s:\n%s",
-                       year, date_folder, filename, traceback.format_exc())
-    if meta_col is not None:
-        update_status(meta_col, current_file=None)
-    return count
-
-def full_scan(col, meta_col) -> int:
-    log.info("Starte vollstaendigen Erst-Scan aller Jahre/Tage unter %s ...", BASE_URL)
-    update_status(
-        meta_col,
-        phase="initial_scan",
-        status="running",
-        detail="Ermittle Verzeichnisstruktur (Jahre/Tage) ...",
-        current_year=None,
-        current_date_folder=None,
-        current_file=None,
-    )
-
-    targets = []
-    for year in sorted(list_dirs(BASE_URL)):
-        if not YEAR_PATTERN.match(year):
-            continue
-        year_url = f"{BASE_URL}{year}/"
-        for date_folder in sorted(list_dirs(year_url)):
-            if not DATE_PATTERN.match(date_folder):
-                continue
-            targets.append((year, date_folder))
-
-    total_folders = len(targets)
-    update_status(meta_col, total_folders=total_folders, folders_done=0, new_files_this_run=0)
-
-    total_new = 0
-    for idx, (year, date_folder) in enumerate(targets, start=1):
-        update_status(
-            meta_col,
-            current_year=year,
-            current_date_folder=date_folder,
-            detail=f"Erst-Scan: {year}/{date_folder} (Ordner {idx}/{total_folders})",
-        )
-        total_new += scan_date_folder(col, year, date_folder, meta_col=meta_col)
-        update_status(meta_col, folders_done=idx, new_files_this_run=total_new)
-
-    update_status(
-        meta_col,
-        detail=f"Erst-Scan abgeschlossen ({total_new} neue Datei(en))",
-        current_year=None, current_date_folder=None, current_file=None,
-    )
-    log.info("Erst-Scan abgeschlossen. %d neue Dateien verarbeitet.", total_new)
-    return total_new
-
-def incremental_scan(col, meta_col) -> int:
-    update_status(
-        meta_col, phase="incremental_scan", status="running",
-        detail="Pruefe aktuelle(s) Datum/Tage auf neue Dateien ...", new_files_this_run=0,
-    )
-    total = 0
-    today = date.today()
-    for offset in range(RECHECK_DAYS):
-        d = today - timedelta(days=offset)
-        year = d.strftime("%Y")
-        date_folder = d.strftime("%Y%m%d")
-        update_status(
-            meta_col, current_year=year, current_date_folder=date_folder,
-            detail=f"Pruefe {year}/{date_folder} auf neue Dateien ...",
-        )
-        total += scan_date_folder(col, year, date_folder, meta_col=meta_col)
-        update_status(meta_col, new_files_this_run=total)
-
-    update_status(
-        meta_col, detail=f"Letzter Scan abgeschlossen ({total} neue Datei(en))",
-        current_year=None, current_date_folder=None, current_file=None,
-    )
-    return total
-
 
 
 def parse_filename(filename: str):
@@ -274,6 +159,26 @@ def list_pdf_files(url: str):
 # --------------------------------------------------------------------------- #
 # MongoDB
 # --------------------------------------------------------------------------- #
+def _create_index_safe(col, keys, **kwargs):
+    """Erstellt einen Index; falls unter demselben Namen bereits ein Index mit
+    abweichenden Optionen existiert (z.B. nach Erweiterung der Text-Index-Felder
+    in einer neueren Version dieses Skripts), wird der alte Index gedroppt und
+    neu erstellt, statt mit OperationFailure (Code 85/86, IndexOptionsConflict)
+    abzubrechen."""
+    try:
+        col.create_index(keys, **kwargs)
+    except OperationFailure as exc:
+        if getattr(exc, "code", None) in (85, 86) and "name" in kwargs:
+            log.warning(
+                "Index '%s' existiert bereits mit abweichenden Optionen -- wird neu erstellt.",
+                kwargs["name"],
+            )
+            col.drop_index(kwargs["name"])
+            col.create_index(keys, **kwargs)
+        else:
+            raise
+
+
 def ensure_indexes(col):
     _create_index_safe(col, [("relative_path", ASCENDING)], unique=True, name="uniq_relative_path")
     _create_index_safe(col, [("date", ASCENDING)], name="idx_date")
@@ -380,6 +285,110 @@ def process_file(col, year: str, date_folder: str, filename: str, file_url: str)
     return True
 
 
+def scan_date_folder(col, year: str, date_folder: str, meta_col=None) -> int:
+    url = f"{BASE_URL}{year}/{date_folder}/"
+    count = 0
+    files = list_pdf_files(url)
+    for filename, file_url in files:
+        if meta_col is not None:
+            update_status(meta_col, current_file=filename)
+        try:
+            if process_file(col, year, date_folder, filename, file_url):
+                count += 1
+        except Exception:
+            log.error("Fehler bei Verarbeitung von %s/%s/%s:\n%s",
+                       year, date_folder, filename, traceback.format_exc())
+    if meta_col is not None:
+        update_status(meta_col, current_file=None)
+    return count
+
+
+def full_scan(col, meta_col) -> int:
+    log.info("Starte vollstaendigen Erst-Scan aller Jahre/Tage unter %s ...", BASE_URL)
+    update_status(
+        meta_col,
+        phase="initial_scan",
+        status="running",
+        detail="Ermittle Verzeichnisstruktur (Jahre/Tage) ...",
+        current_year=None,
+        current_date_folder=None,
+        current_file=None,
+    )
+
+    # Erst alle zu scannenden (Jahr, Datum)-Ordner ermitteln, damit ein
+    # Fortschritt ("Ordner X von Y") angezeigt werden kann.
+    targets = []
+    for year in sorted(list_dirs(BASE_URL)):
+        if not YEAR_PATTERN.match(year):
+            continue
+        year_url = f"{BASE_URL}{year}/"
+        for date_folder in sorted(list_dirs(year_url)):
+            if not DATE_PATTERN.match(date_folder):
+                continue
+            targets.append((year, date_folder))
+
+    total_folders = len(targets)
+    update_status(meta_col, total_folders=total_folders, folders_done=0, new_files_this_run=0)
+
+    total_new = 0
+    for idx, (year, date_folder) in enumerate(targets, start=1):
+        update_status(
+            meta_col,
+            current_year=year,
+            current_date_folder=date_folder,
+            detail=f"Erst-Scan: {year}/{date_folder} (Ordner {idx}/{total_folders})",
+        )
+        total_new += scan_date_folder(col, year, date_folder, meta_col=meta_col)
+        update_status(meta_col, folders_done=idx, new_files_this_run=total_new)
+
+    update_status(
+        meta_col,
+        detail=f"Erst-Scan abgeschlossen ({total_new} neue Datei(en))",
+        current_year=None,
+        current_date_folder=None,
+        current_file=None,
+    )
+    log.info("Erst-Scan abgeschlossen. %d neue Dateien verarbeitet.", total_new)
+    return total_new
+
+
+def incremental_scan(col, meta_col) -> int:
+    """Prueft nur die letzten RECHECK_DAYS Tage (Standard: heute + 1 Tag zurueck)."""
+    update_status(
+        meta_col,
+        phase="incremental_scan",
+        status="running",
+        detail="Pruefe aktuelle(s) Datum/Tage auf neue Dateien ...",
+        new_files_this_run=0,
+    )
+
+    total = 0
+    today = date.today()
+    for offset in range(RECHECK_DAYS):
+        d = today - timedelta(days=offset)
+        year = d.strftime("%Y")
+        date_folder = d.strftime("%Y%m%d")
+        update_status(
+            meta_col,
+            current_year=year,
+            current_date_folder=date_folder,
+            detail=f"Pruefe {year}/{date_folder} auf neue Dateien ...",
+        )
+        total += scan_date_folder(col, year, date_folder, meta_col=meta_col)
+        update_status(meta_col, new_files_this_run=total)
+
+    if total:
+        log.info("Inkrementeller Scan: %d neue Dateien verarbeitet.", total)
+
+    update_status(
+        meta_col,
+        detail=f"Letzter Scan abgeschlossen ({total} neue Datei(en))",
+        current_year=None,
+        current_date_folder=None,
+        current_file=None,
+    )
+    return total
+
 
 def main():
     mongo = MongoClient(MONGO_URI)
@@ -403,15 +412,20 @@ def main():
 
             next_run = datetime.utcnow() + timedelta(seconds=POLL_INTERVAL_SECONDS)
             update_status(
-                meta_col, status="idle", last_run=datetime.utcnow(),
-                next_run=next_run, last_error=None,
+                meta_col,
+                status="idle",
+                last_run=datetime.utcnow(),
+                next_run=next_run,
+                last_error=None,
             )
 
         except Exception:
             err_text = traceback.format_exc()
             log.error("Unerwarteter Fehler im Scan-Zyklus:\n%s", err_text)
             update_status(
-                meta_col, status="error", detail="Fehler im Scan-Zyklus (siehe Logs)",
+                meta_col,
+                status="error",
+                detail="Fehler im Scan-Zyklus (siehe Logs)",
                 last_error=str(err_text).splitlines()[-1] if err_text else "unbekannter Fehler",
             )
 

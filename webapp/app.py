@@ -220,8 +220,25 @@ def api_rescan():
 
 @app.route("/api/status")
 def api_status():
-    state = meta_col.find_one({"_id": "scanner"}) or {}
-    total_docs = col.count_documents({})
+    """Liefert den Live-Status des Watchers + Gesamtzahl Dokumente.
+
+    Diese Route darf dem Frontend NIEMALS einen 500er mit HTML-Fehlerseite
+    liefern, da das Frontend res.json() aufruft und bei nicht-JSON-Antworten
+    abstuerzen wuerde. Deshalb wird hier defensiv mit try/except gearbeitet und
+    im Fehlerfall ein valides JSON mit sinnvollen Defaults zurueckgegeben.
+    """
+    try:
+        state = meta_col.find_one({"_id": "scanner"}) or {}
+    except Exception:
+        state = {}
+        app.logger.exception("Konnte scanner_state nicht lesen")
+
+    try:
+        total_docs = col.count_documents({})
+    except Exception:
+        total_docs = 0
+        app.logger.exception("Konnte Dokumentenanzahl nicht ermitteln")
+
     return jsonify({
         # Watcher-Lebenszyklus
         "initial_scan_done": state.get("initial_scan_done", False),
@@ -241,7 +258,7 @@ def api_status():
         "last_full_scan": _iso(state.get("last_full_scan")),
         "updated_at": _iso(state.get("updated_at")),
         "last_error": state.get("last_error"),
-        # Gesamtzahl Dokumente in der Datenbank
+        # Gesamtzahl Dokumente in der Datenbank (immer eine Zahl, nie null/undefined)
         "total_documents": total_docs,
     })
 

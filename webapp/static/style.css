@@ -1,12 +1,72 @@
-body { background-color: #f5f6f8; }
-.result-card { cursor: pointer; transition: transform 0.1s ease, box-shadow 0.1s ease; height: 100%; }
-.result-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-.thumb-wrapper { height: 160px; background: #e9ecef; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 4px 4px 0 0; }
-.thumb-wrapper img { max-height: 100%; max-width: 100%; object-fit: contain; }
-.thumb-placeholder { font-size: 2.5rem; color: #adb5bd; }
-.card-body small.text-muted { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-body .badge { font-size: 0.7rem; }
-#pdfFrame { min-height: 90vh; }
-.status-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
-.status-dot.blinking { animation: blink 1.2s ease-in-out infinite; }
-@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+body {
+    background-color: #f5f6f8;
+  }
+  
+  .result-card {
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+    height: 100%;
+  }
+  
+  .result-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  
+  .thumb-wrapper {
+    height: 160px;
+    background: #e9ecef;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 4px 4px 0 0;
+  }
+  
+  .thumb-wrapper img {
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+  }
+  
+  .thumb-placeholder {
+    font-size: 2.5rem;
+    color: #adb5bd;
+  }
+  
+  .card-body small.text-muted {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  .card-body .badge {
+    font-size: 0.7rem;
+  }
+  
+  #pdfFrame {
+    min-height: 90vh;
+  }
+  
+  /* --- Status-Panel --- */
+  .status-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+  }
+  
+  .status-dot.blinking {
+    animation: blink 1.2s ease-in-out infinite;
+  }
+  
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  
+  #statusProgressBar {
+    font-size: 0.65rem;
+    line-height: 8px;
+  }

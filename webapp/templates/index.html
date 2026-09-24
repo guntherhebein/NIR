@@ -10,7 +10,26 @@
 <body>
 <div class="container-fluid py-4">
 
-  <h1 class="mb-4">📄 Protokoll-Archiv</h1>
+  <h1 class="mb-3">📄 Protokoll-Archiv</h1>
+
+  <!-- Status-Panel: zeigt live, was der Watcher gerade tut -->
+  <div id="statusPanel" class="card mb-4 shadow-sm">
+    <div class="card-body py-2 px-3">
+      <div class="d-flex align-items-center flex-wrap gap-3">
+        <div class="d-flex align-items-center gap-2">
+          <span id="statusDot" class="status-dot bg-secondary"></span>
+          <span id="statusDetail" class="fw-semibold">Status wird geladen ...</span>
+        </div>
+        <div id="statusProgressWrap" class="flex-grow-1 d-none" style="min-width:200px;">
+          <div class="progress" style="height: 8px;">
+            <div id="statusProgressBar" class="progress-bar" role="progressbar" style="width:0%"></div>
+          </div>
+        </div>
+        <span id="statusExtra" class="text-muted small"></span>
+        <span class="ms-auto badge bg-primary fs-6" id="totalDocsBadge">... Dokumente in der Datenbank</span>
+      </div>
+    </div>
+  </div>
 
   <form id="searchForm" class="card card-body mb-4 shadow-sm">
     <div class="row g-3">
@@ -65,12 +84,16 @@
       </div>
     </div>
     <div class="mt-2">
-      <button type="button" id="resetBtn" class="btn btn-link p-0">Filter zurücksetzen</button>
+      <button type="button" id="resetBtn" class="btn btn-link p-0">Filter zurücksetzen (alle Dokumente anzeigen)</button>
       <span id="resultCount" class="text-muted ms-3"></span>
     </div>
   </form>
 
   <div id="results" class="row g-3"></div>
+
+  <div class="text-center mt-4 mb-4">
+    <button type="button" id="loadMoreBtn" class="btn btn-outline-primary d-none">Weitere Dokumente laden</button>
+  </div>
 </div>
 
 <!-- PDF Viewer Modal -->
@@ -91,28 +114,6 @@
       <div class="modal-body p-0">
         <iframe id="pdfFrame" src="" class="w-100 h-100" style="border:0;"></iframe>
       </div>
-    </div>
-  </div>
-</div>
-
-<div class="text-center mt-4 mb-4"></div>
-  <button type="button" id="loadMoreBtn" class="btn btn-outline-primary d-none">Weitere Dokumente laden</button>
-</div>
-
-<div id="statusPanel" class="card mb-4 shadow-sm"></div>
-  <div class="card-body py-2 px-3">
-    <div class="d-flex align-items-center flex-wrap gap-3">
-      <div class="d-flex align-items-center gap-2">
-        <span id="statusDot" class="status-dot bg-secondary"></span>
-        <span id="statusDetail" class="fw-semibold">Status wird geladen ...</span>
-      </div>
-      <div id="statusProgressWrap" class="flex-grow-1 d-none" style="min-width:200px;">
-        <div class="progress" style="height: 8px;">
-          <div id="statusProgressBar" class="progress-bar" role="progressbar" style="width:0%"></div>
-        </div>
-      </div>
-      <span id="statusExtra" class="text-muted small"></span>
-      <span class="ms-auto badge bg-primary fs-6" id="totalDocsBadge">... Dokumente in der Datenbank</span>
     </div>
   </div>
 </div>

@@ -120,6 +120,7 @@ def parse_pdf_fields(text: str) -> dict:
             continue
     result["naechste_nachbarn"] = neighbors
 
+    # numerische Felder konvertieren, wo sinnvoll
     for float_field in ("konformitaetsindex", "korrelation", "korrelation_wc1920"):
         if result.get(float_field):
             try:
