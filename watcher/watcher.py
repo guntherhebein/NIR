@@ -1,51 +1,59 @@
 #!/usr/bin/env python3
 """
 Watcher-Prozess:
-- Verbindet sich per SMB (\\10.139.13.121\Protocols) mit der Netzwerkfreigabe
+- Liest die per HTTP erreichbare Verzeichnisliste (Apache/nginx Autoindex-Stil)
+  unter http://10.139.13.121/Protocols/ aus
+- Struktur: <BASE_URL>/<Jahr>/<JJJJMMTT>/<Datei>.pdf
 - Beim allerersten Start: komplette Verzeichnisstruktur (alle Jahre/Tage) durchlaufen
 - Danach: nur noch aktuelles Datum (+ Puffer von RECHECK_DAYS Tagen zurueck)
   jede POLL_INTERVAL_SECONDS Sekunden pruefen
-- Neue PDFs werden heruntergeladen, lokal abgelegt (persistentes Volume /storage)
-  und mitsamt Metadaten (Geraetenummer, laufende Messungsnummer, Messungsname,
-  Datum, Dateigroesse, Pfade ...) in MongoDB gespeichert
-- Erzeugt zusaetzlich ein PNG-Thumbnail der ersten PDF-Seite fuer die Vorschau
-  in der Weboberflaeche
+- Neue PDFs werden heruntergeladen, lokal abgelegt (persistentes Volume /storage),
+  ein Thumbnail der ersten Seite erzeugt, der PDF-Text-Inhalt strukturiert
+  ausgelesen (siehe pdf_parser.py) und alles zusammen in MongoDB gespeichert
 """
 
 import os
 import re
-import sys
 import time
 import logging
 import traceback
 from datetime import datetime, date, timedelta
+from urllib.parse import urljoin, unquote
 
-import smbclient
+import requests
+from requests.auth import HTTPBasicAuth
+from bs4 import BeautifulSoup
 from pymongo import MongoClient, ASCENDING
 from pymongo.errors import DuplicateKeyError
 from pdf2image import convert_from_path
 
+from pdf_parser import extract_pdf_metadata
+
 # --------------------------------------------------------------------------- #
 # Konfiguration ueber Umgebungsvariablen
 # --------------------------------------------------------------------------- #
-SMB_SERVER   = os.environ["SMB_SERVER"]
-SMB_SHARE    = os.environ["SMB_SHARE"]
-SMB_USERNAME = os.environ.get("SMB_USERNAME") or None
-SMB_PASSWORD = os.environ.get("SMB_PASSWORD") or None
-SMB_DOMAIN   = os.environ.get("SMB_DOMAIN") or None
+BASE_URL = os.environ.get("BASE_URL", "http://10.139.13.121/Protocols/").rstrip("/") + "/"
+HTTP_AUTH_USER = os.environ.get("HTTP_AUTH_USER") or None
+HTTP_AUTH_PASS = os.environ.get("HTTP_AUTH_PASS") or None
+HTTP_VERIFY_SSL = os.environ.get("HTTP_VERIFY_SSL", "true").lower() not in ("0", "false", "no")
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "30"))
 
 MONGO_URI = os.environ["MONGO_URI"]
-MONGO_DB  = os.environ.get("MONGO_DB", "protocol_archive")
+MONGO_DB = os.environ.get("MONGO_DB", "protocol_archive")
 
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "60"))
-RECHECK_DAYS          = int(os.environ.get("RECHECK_DAYS", "2"))  # Sicherheitspuffer um Mitternacht
-STORAGE_PATH          = os.environ.get("STORAGE_PATH", "/storage")
+RECHECK_DAYS = int(os.environ.get("RECHECK_DAYS", "2"))  # Sicherheitspuffer um Mitternacht
+STORAGE_PATH = os.environ.get("STORAGE_PATH", "/storage")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("watcher")
+
+session = requests.Session()
+if HTTP_AUTH_USER:
+    session.auth = HTTPBasicAuth(HTTP_AUTH_USER, HTTP_AUTH_PASS or "")
 
 # --------------------------------------------------------------------------- #
 # Dateiname-Parser
@@ -63,47 +71,7 @@ YEAR_PATTERN = re.compile(r"^\d{4}$")
 DATE_PATTERN = re.compile(r"^\d{8}$")
 
 
-def smb_base_path() -> str:
-    return rf"\\{SMB_SERVER}\{SMB_SHARE}"
-
-
-def connect_smb():
-    log.info("Verbinde zu SMB-Server %s (Share: %s) ...", SMB_SERVER, SMB_SHARE)
-    smbclient.register_session(
-        SMB_SERVER,
-        username=SMB_USERNAME,
-        password=SMB_PASSWORD,
-        # domain wird bei smbprotocol ueber user='DOMAIN\\user' abgebildet,
-        # falls SMB_DOMAIN gesetzt ist, hier automatisch voranstellen
-    )
-
-
-def list_dirs(path: str):
-    """Liefert Liste von Verzeichnisnamen (nicht Dateien) unter path."""
-    entries = []
-    try:
-        for entry in smbclient.scandir(path):
-            if entry.is_dir():
-                entries.append(entry.name)
-    except Exception as exc:
-        log.warning("Konnte Verzeichnis nicht lesen: %s (%s)", path, exc)
-    return entries
-
-
-def list_pdf_files(path: str):
-    """Liefert Liste (name, smb_stat) fuer alle *.pdf Dateien in path."""
-    files = []
-    try:
-        for entry in smbclient.scandir(path):
-            if entry.is_file() and entry.name.lower().endswith(".pdf"):
-                files.append(entry.name)
-    except Exception as exc:
-        log.warning("Konnte Verzeichnis nicht lesen: %s (%s)", path, exc)
-    return files
-
-
 def parse_filename(filename: str):
-    """Zerlegt den Dateinamen in seine Bestandteile. Bei Fehlschlag: parse_error=True."""
     m = FILENAME_PATTERN.match(filename)
     if not m:
         return {
@@ -125,19 +93,76 @@ def parse_filename(filename: str):
     }
 
 
+# --------------------------------------------------------------------------- #
+# HTTP-Verzeichnis-Crawling (Apache/nginx Autoindex)
+# --------------------------------------------------------------------------- #
+def fetch_listing(url: str):
+    """Liefert Liste von (name_decoded, absolute_url, is_dir) fuer ein Verzeichnis."""
+    try:
+        resp = session.get(url, timeout=HTTP_TIMEOUT, verify=HTTP_VERIFY_SSL)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("Konnte Verzeichnis nicht laden: %s (%s)", url, exc)
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    entries = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href or href in ("../", "./") or href.startswith("?") or href.startswith("#"):
+            continue
+        if href.startswith("http://") or href.startswith("https://"):
+            # absolute Links auf andere Hosts/Pfade ignorieren
+            if not href.startswith(BASE_URL):
+                continue
+        absolute_url = urljoin(url, href)
+        # 'Parent Directory'-Links (zeigen auf das aktuelle oder ein uebergeordnetes
+        # Verzeichnis) sowie Selbstverweise ausschliessen
+        if absolute_url.rstrip("/") == url.rstrip("/"):
+            continue
+        if not absolute_url.startswith(url):
+            continue
+        name_decoded = unquote(href.rstrip("/").split("/")[-1])
+        if not name_decoded:
+            continue
+        is_dir = href.endswith("/")
+        entries.append((name_decoded, absolute_url, is_dir))
+    return entries
+
+
+def list_dirs(url: str):
+    return [name for name, _, is_dir in fetch_listing(url) if is_dir]
+
+
+def list_pdf_files(url: str):
+    """Liefert Liste (filename_decoded, absolute_url) aller *.pdf in einem Verzeichnis."""
+    return [
+        (name, abs_url)
+        for name, abs_url, is_dir in fetch_listing(url)
+        if not is_dir and name.lower().endswith(".pdf")
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# MongoDB
+# --------------------------------------------------------------------------- #
 def ensure_indexes(col):
     col.create_index([("relative_path", ASCENDING)], unique=True, name="uniq_relative_path")
     col.create_index([("date", ASCENDING)], name="idx_date")
     col.create_index([("device_number", ASCENDING)], name="idx_device")
     col.create_index([("measurement_seq", ASCENDING)], name="idx_seq")
+    col.create_index([("benutzer", ASCENDING)], name="idx_benutzer")
+    col.create_index([("apotheke", ASCENDING)], name="idx_apotheke")
+    col.create_index([("pruefergebnis", ASCENDING)], name="idx_pruefergebnis")
+    col.create_index([("stoffklassenvalidierung", ASCENDING)], name="idx_validierung")
     col.create_index(
-        [("measurement_name", "text"), ("filename", "text")],
+        [("measurement_name", "text"), ("filename", "text"), ("apotheke", "text"), ("benutzer", "text")],
         name="idx_text_search",
         default_language="german",
     )
 
 
-def make_thumbnail(local_pdf_path: str, thumb_path: str):
+def make_thumbnail(local_pdf_path: str, thumb_path: str) -> bool:
     try:
         os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
         pages = convert_from_path(local_pdf_path, dpi=80, first_page=1, last_page=1)
@@ -149,20 +174,27 @@ def make_thumbnail(local_pdf_path: str, thumb_path: str):
     return False
 
 
-def process_file(col, year: str, date_folder: str, filename: str):
-    relative_path = f"{year}/{date_folder}/{filename}"
-    remote_path = f"{smb_base_path()}\\{year}\\{date_folder}\\{filename}"
+def download_file(url: str, local_path: str) -> bool:
+    try:
+        with session.get(url, timeout=HTTP_TIMEOUT, stream=True, verify=HTTP_VERIFY_SSL) as resp:
+            resp.raise_for_status()
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            with open(local_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 64):
+                    if chunk:
+                        f.write(chunk)
+        return True
+    except Exception as exc:
+        log.error("Download fehlgeschlagen fuer %s: %s", url, exc)
+        return False
 
-    # Existiert bereits (per relative_path) und wurde erfolgreich geladen? -> ueberspringen
+
+def process_file(col, year: str, date_folder: str, filename: str, file_url: str):
+    relative_path = f"{year}/{date_folder}/{filename}"
+
     existing = col.find_one({"relative_path": relative_path})
     if existing and existing.get("downloaded"):
-        return False  # nichts Neues
-
-    try:
-        remote_stat = smbclient.stat(remote_path)
-    except Exception as exc:
-        log.warning("Konnte Remote-Datei nicht stat'en: %s (%s)", remote_path, exc)
-        return False
+        return False  # bereits vollstaendig verarbeitet
 
     try:
         parsed_date = datetime.strptime(date_folder, "%Y%m%d")
@@ -171,23 +203,28 @@ def process_file(col, year: str, date_folder: str, filename: str):
 
     meta = parse_filename(filename)
 
-    local_dir = os.path.join(STORAGE_PATH, year, date_folder)
-    os.makedirs(local_dir, exist_ok=True)
-    local_path = os.path.join(local_dir, filename)
+    local_path = os.path.join(STORAGE_PATH, year, date_folder, filename)
 
     log.info("Lade neue Datei: %s", relative_path)
-    try:
-        with smbclient.open_file(remote_path, mode="rb") as remote_f:
-            data = remote_f.read()
-        with open(local_path, "wb") as local_f:
-            local_f.write(data)
-    except Exception as exc:
-        log.error("Download fehlgeschlagen fuer %s: %s", relative_path, exc)
+    if not download_file(file_url, local_path):
         return False
 
-    thumb_rel = os.path.join(year, date_folder, ".thumbnails", filename[:-4] + ".png")
-    thumb_abs = os.path.join(STORAGE_PATH, thumb_rel)
+    file_size = os.path.getsize(local_path) if os.path.exists(local_path) else None
+
+    thumb_abs = os.path.join(STORAGE_PATH, year, date_folder, ".thumbnails", filename[:-4] + ".png")
     thumb_ok = make_thumbnail(local_path, thumb_abs)
+
+    pdf_fields = extract_pdf_metadata(local_path)
+
+    # 'measurement_datetime' (aus dem PDF-Inhalt, inkl. Uhrzeit) zusaetzlich als
+    # echtes datetime-Objekt ablegen, falls parsebar -- fuer exakte Sortierung/Filterung
+    measurement_datetime = None
+    dt_str = pdf_fields.get("measurement_datetime_str")
+    if dt_str:
+        try:
+            measurement_datetime = datetime.strptime(dt_str, "%d.%m.%Y %H:%M:%S")
+        except ValueError:
+            pass
 
     doc = {
         "relative_path": relative_path,
@@ -195,20 +232,19 @@ def process_file(col, year: str, date_folder: str, filename: str):
         "year": year,
         "date_folder": date_folder,
         "date": parsed_date,
+        "measurement_datetime": measurement_datetime,
         **meta,
-        "file_size": getattr(remote_stat, "st_size", None),
+        "file_size": file_size,
         "local_path": local_path,
         "thumbnail_path": thumb_abs if thumb_ok else None,
+        "source_url": file_url,
+        **pdf_fields,
         "downloaded": True,
         "downloaded_at": datetime.utcnow(),
     }
 
     try:
-        col.update_one(
-            {"relative_path": relative_path},
-            {"$set": doc},
-            upsert=True,
-        )
+        col.update_one({"relative_path": relative_path}, {"$set": doc}, upsert=True)
     except DuplicateKeyError:
         pass
 
@@ -216,11 +252,11 @@ def process_file(col, year: str, date_folder: str, filename: str):
 
 
 def scan_date_folder(col, year: str, date_folder: str) -> int:
-    path = f"{smb_base_path()}\\{year}\\{date_folder}"
+    url = f"{BASE_URL}{year}/{date_folder}/"
     count = 0
-    for filename in list_pdf_files(path):
+    for filename, file_url in list_pdf_files(url):
         try:
-            if process_file(col, year, date_folder, filename):
+            if process_file(col, year, date_folder, filename, file_url):
                 count += 1
         except Exception:
             log.error("Fehler bei Verarbeitung von %s/%s/%s:\n%s",
@@ -229,14 +265,13 @@ def scan_date_folder(col, year: str, date_folder: str) -> int:
 
 
 def full_scan(col) -> int:
-    log.info("Starte vollstaendigen Erst-Scan aller Jahre/Tage ...")
+    log.info("Starte vollstaendigen Erst-Scan aller Jahre/Tage unter %s ...", BASE_URL)
     total = 0
-    base = smb_base_path()
-    for year in sorted(list_dirs(base)):
+    for year in sorted(list_dirs(BASE_URL)):
         if not YEAR_PATTERN.match(year):
             continue
-        year_path = f"{base}\\{year}"
-        for date_folder in sorted(list_dirs(year_path)):
+        year_url = f"{BASE_URL}{year}/"
+        for date_folder in sorted(list_dirs(year_url)):
             if not DATE_PATTERN.match(date_folder):
                 continue
             total += scan_date_folder(col, year, date_folder)
@@ -266,14 +301,11 @@ def main():
 
     ensure_indexes(col)
 
-    connect_smb()
-
     state = meta_col.find_one({"_id": "scanner"}) or {}
     initial_scan_done = state.get("initial_scan_done", False)
 
     while True:
         try:
-            connect_smb()  # Session ggf. erneuern (idempotent)
             if not initial_scan_done:
                 full_scan(col)
                 initial_scan_done = True

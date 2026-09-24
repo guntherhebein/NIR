@@ -4,11 +4,11 @@ Flask-Webanwendung zur Suche/Anzeige der archivierten Mess-Protokolle.
 
 Endpunkte:
   GET  /                     -> HTML-Suchoberflaeche
-  GET  /api/search           -> JSON-Suchergebnisse (Filter: date_from, date_to,
-                                 device, seq, name)
+  GET  /api/search           -> JSON-Suchergebnisse
   GET  /pdf/<id>             -> Liefert das Original-PDF (inline, fuer Vorschau/Druck)
   GET  /thumbnail/<id>       -> Liefert das Vorschaubild (PNG) der ersten Seite
   POST /api/rescan           -> Erzwingt beim naechsten Watcher-Zyklus einen kompletten Re-Scan
+  GET  /api/status           -> Status-Info (letzter Lauf, Anzahl Dokumente, ...)
 """
 
 import os
@@ -36,6 +36,10 @@ def doc_to_json(doc):
         "year": doc.get("year"),
         "date_folder": doc.get("date_folder"),
         "date": doc["date"].strftime("%Y-%m-%d") if doc.get("date") else None,
+        "measurement_datetime": (
+            doc["measurement_datetime"].strftime("%Y-%m-%d %H:%M:%S")
+            if doc.get("measurement_datetime") else doc.get("measurement_datetime_str")
+        ),
         "device_number": doc.get("device_number"),
         "measurement_seq": doc.get("measurement_seq"),
         "measurement_code": doc.get("measurement_code"),
@@ -44,6 +48,21 @@ def doc_to_json(doc):
         "file_size": doc.get("file_size"),
         "has_thumbnail": bool(doc.get("thumbnail_path")),
         "parse_error": doc.get("parse_error", False),
+        # --- aus dem PDF-Inhalt extrahierte Zusatzfelder ---
+        "benutzer": doc.get("benutzer"),
+        "apotheke": doc.get("apotheke"),
+        "pruefergebnis": doc.get("pruefergebnis"),
+        "stoffklasse": doc.get("stoffklasse"),
+        "original_stoffklasse": doc.get("original_stoffklasse"),
+        "stoffklassenvalidierung": doc.get("stoffklassenvalidierung"),
+        "konformitaetsindex": doc.get("konformitaetsindex"),
+        "korrelation": doc.get("korrelation"),
+        "geraete_id_pdf": doc.get("geraete_id_pdf"),
+        "protokoll_version": doc.get("protokoll_version"),
+        "software_version": doc.get("software_version"),
+        "datenbank_version": doc.get("datenbank_version"),
+        "bemerkung": doc.get("bemerkung"),
+        "naechste_nachbarn": doc.get("naechste_nachbarn", []),
     }
 
 
@@ -61,6 +80,10 @@ def api_search():
     device = request.args.get("device", "").strip()
     seq = request.args.get("seq", "").strip()
     name = request.args.get("name", "").strip()
+    benutzer = request.args.get("benutzer", "").strip()
+    apotheke = request.args.get("apotheke", "").strip()
+    pruefergebnis = request.args.get("pruefergebnis", "").strip()
+    validierung = request.args.get("validierung", "").strip()
 
     date_filter = {}
     if date_from:
@@ -82,12 +105,24 @@ def api_search():
     if seq:
         query["measurement_seq"] = {"$regex": f"^{seq}$", "$options": "i"}
 
+    if benutzer:
+        query["benutzer"] = {"$regex": benutzer, "$options": "i"}
+
+    if apotheke:
+        query["apotheke"] = {"$regex": apotheke, "$options": "i"}
+
+    if pruefergebnis:
+        query["pruefergebnis"] = {"$regex": pruefergebnis, "$options": "i"}
+
+    if validierung:
+        query["stoffklassenvalidierung"] = {"$regex": f"^{validierung}$", "$options": "i"}
+
     if name:
-        # Suche in Messungsname, Code UND Dateiname (Freitext-Teilstring, case-insensitive)
         query["$or"] = [
             {"measurement_name": {"$regex": name, "$options": "i"}},
             {"measurement_code": {"$regex": name, "$options": "i"}},
             {"filename": {"$regex": name, "$options": "i"}},
+            {"stoffklasse": {"$regex": name, "$options": "i"}},
         ]
 
     limit = min(int(request.args.get("limit", 200)), 1000)

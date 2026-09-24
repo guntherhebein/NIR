@@ -12,7 +12,7 @@ services:
     volumes:
       - mongo-data:/data/db
     ports:
-      - "27017:27017"   # optional, kann entfernt werden
+      - "27017:27017"   # optional, kann entfernt werden wenn kein externer Zugriff nötig
     networks:
       - backend
     healthcheck:
@@ -29,11 +29,11 @@ services:
       mongo:
         condition: service_healthy
     environment:
-      SMB_SERVER: ${SMB_SERVER}
-      SMB_SHARE: ${SMB_SHARE}
-      SMB_USERNAME: ${SMB_USERNAME}
-      SMB_PASSWORD: ${SMB_PASSWORD}
-      SMB_DOMAIN: ${SMB_DOMAIN}
+      BASE_URL: ${BASE_URL}
+      HTTP_AUTH_USER: ${HTTP_AUTH_USER}
+      HTTP_AUTH_PASS: ${HTTP_AUTH_PASS}
+      HTTP_VERIFY_SSL: ${HTTP_VERIFY_SSL}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS}
       MONGO_URI: ${MONGO_URI}
       MONGO_DB: ${MONGO_DB}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS}

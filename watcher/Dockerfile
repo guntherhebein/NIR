@@ -10,6 +10,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY watcher.py .
+COPY watcher.py pdf_parser.py ./
 
 CMD ["python", "-u", "watcher.py"]

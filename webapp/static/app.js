@@ -7,6 +7,7 @@ const pdfModalEl = document.getElementById('pdfModal');
 const pdfModal = new bootstrap.Modal(pdfModalEl);
 const pdfFrame = document.getElementById('pdfFrame');
 const pdfModalTitle = document.getElementById('pdfModalTitle');
+const pdfModalSubtitle = document.getElementById('pdfModalSubtitle');
 const downloadLink = document.getElementById('downloadLink');
 const printBtn = document.getElementById('printBtn');
 
@@ -25,6 +26,11 @@ function formatSize(bytes) {
   return (kb / 1024).toFixed(1) + ' MB';
 }
 
+function badgeClass(value, goodValues) {
+  if (!value) return 'bg-secondary';
+  return goodValues.includes(value.toLowerCase()) ? 'bg-success' : 'bg-danger';
+}
+
 function renderResults(items) {
   resultsEl.innerHTML = '';
   if (items.length === 0) {
@@ -40,14 +46,22 @@ function renderResults(items) {
       ? `<img src="/thumbnail/${item.id}" alt="Vorschau">`
       : `<div class="thumb-placeholder">📄</div>`;
 
+    const pruefBadge = item.pruefergebnis
+      ? `<span class="badge ${badgeClass(item.pruefergebnis, ['stimmt überein'])}">${escapeHtml(item.pruefergebnis)}</span>`
+      : '';
+    const validierungBadge = item.stoffklassenvalidierung
+      ? `<span class="badge ${badgeClass(item.stoffklassenvalidierung, ['valide'])}">${escapeHtml(item.stoffklassenvalidierung)}</span>`
+      : '';
+
     col.innerHTML = `
       <div class="card result-card shadow-sm" data-id="${item.id}">
         <div class="thumb-wrapper">${thumbHtml}</div>
         <div class="card-body">
-          <strong>${escapeHtml(item.date || '-')}</strong>
-          <small class="text-muted">Gerät: ${escapeHtml(item.device_number || '?')}</small>
-          <small class="text-muted">Messung Nr.: ${escapeHtml(item.measurement_seq || '?')}</small>
+          <strong>${escapeHtml(item.measurement_datetime || item.date || '-')}</strong>
+          <small class="text-muted">Gerät: ${escapeHtml(item.device_number || '?')} · Nr.: ${escapeHtml(item.measurement_seq || '?')}</small>
           <small class="text-muted">${escapeHtml(item.full_measurement_label || item.filename)}</small>
+          <small class="text-muted">👤 ${escapeHtml(item.benutzer || '-')} · 🏢 ${escapeHtml(item.apotheke || '-')}</small>
+          <div class="mt-1 d-flex gap-1 flex-wrap">${pruefBadge}${validierungBadge}</div>
           <small class="text-muted">${formatSize(item.file_size)}</small>
         </div>
       </div>
@@ -60,31 +74,27 @@ function renderResults(items) {
 function openPdf(item) {
   const url = `/pdf/${item.id}`;
   pdfFrame.src = url;
-  pdfModalTitle.textContent = `${item.date || ''} – ${item.full_measurement_label || item.filename}`;
+  pdfModalTitle.textContent = `${item.measurement_datetime || item.date || ''} – ${item.full_measurement_label || item.filename}`;
+  pdfModalSubtitle.textContent = `Gerät: ${item.device_number || '?'} · Messung Nr.: ${item.measurement_seq || '?'} · Benutzer: ${item.benutzer || '-'} · Apotheke: ${item.apotheke || '-'}`;
   downloadLink.href = url;
   pdfModal.show();
 }
 
 printBtn.addEventListener('click', () => {
-  // Nutzt den nativen PDF-Viewer im iframe zum Drucken.
   try {
     pdfFrame.contentWindow.focus();
     pdfFrame.contentWindow.print();
   } catch (e) {
-    // Fallback: PDF in neuem Tab öffnen, dort kann über den Browser-eigenen
-    // PDF-Viewer (Drucker-Symbol) gedruckt werden.
     window.open(pdfFrame.src, '_blank');
   }
 });
 
-// Beim Schliessen des Modals: iframe leeren, damit kein Ton/Player weiterlaeuft
 pdfModalEl.addEventListener('hidden.bs.modal', () => {
   pdfFrame.src = '';
 });
 
 async function doSearch() {
   const params = new URLSearchParams(new FormData(form));
-  // leere Felder nicht mitschicken
   for (const key of Array.from(params.keys())) {
     if (!params.get(key)) params.delete(key);
   }
@@ -104,5 +114,4 @@ resetBtn.addEventListener('click', () => {
   doSearch();
 });
 
-// Initiale Suche beim Laden der Seite (letzte Ergebnisse anzeigen)
 doSearch();

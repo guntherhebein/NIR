@@ -30,11 +30,37 @@
         <label class="form-label">Messungsnummer</label>
         <input type="text" class="form-control" name="seq" placeholder="z.B. 61">
       </div>
-      <div class="col-md-3">
-        <label class="form-label">Name / Code (Teilstring)</label>
+      <div class="col-md-4">
+        <label class="form-label">Name / Code / Stoffklasse (Teilstring)</label>
         <input type="text" class="form-control" name="name" placeholder="z.B. Triglyceride">
       </div>
-      <div class="col-md-1 d-flex align-items-end">
+    </div>
+    <div class="row g-3 mt-1">
+      <div class="col-md-2">
+        <label class="form-label">Benutzer</label>
+        <input type="text" class="form-control" name="benutzer" placeholder="z.B. hebein">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Apotheke</label>
+        <input type="text" class="form-control" name="apotheke" placeholder="z.B. kornblumen apo">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Prüfergebnis</label>
+        <select class="form-select" name="pruefergebnis">
+          <option value="">Alle</option>
+          <option value="stimmt überein">stimmt überein</option>
+          <option value="stimmt nicht">stimmt nicht überein</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Validierung</label>
+        <select class="form-select" name="validierung">
+          <option value="">Alle</option>
+          <option value="valide">valide</option>
+          <option value="invalide">invalide</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-flex align-items-end">
         <button type="submit" class="btn btn-primary w-100">Suchen</button>
       </div>
     </div>
@@ -52,7 +78,10 @@
   <div class="modal-dialog modal-fullscreen">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="pdfModalTitle">Protokoll</h5>
+        <div>
+          <h5 class="modal-title mb-0" id="pdfModalTitle">Protokoll</h5>
+          <small class="text-muted" id="pdfModalSubtitle"></small>
+        </div>
         <div class="ms-auto d-flex gap-2">
           <button type="button" class="btn btn-outline-secondary btn-sm" id="printBtn">🖨️ Drucken</button>
           <a class="btn btn-outline-secondary btn-sm" id="downloadLink" href="#" target="_blank">⬇️ Download</a>
