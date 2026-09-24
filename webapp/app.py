@@ -4,11 +4,11 @@ Flask-Webanwendung zur Suche/Anzeige der archivierten Mess-Protokolle.
 
 Endpunkte:
   GET  /                     -> HTML-Suchoberflaeche
-  GET  /api/search           -> JSON-Suchergebnisse
+  GET  /api/search           -> JSON-Suchergebnisse (paginierbar via skip/limit)
   GET  /pdf/<id>             -> Liefert das Original-PDF (inline, fuer Vorschau/Druck)
   GET  /thumbnail/<id>       -> Liefert das Vorschaubild (PNG) der ersten Seite
   POST /api/rescan           -> Erzwingt beim naechsten Watcher-Zyklus einen kompletten Re-Scan
-  GET  /api/status           -> Status-Info (letzter Lauf, Anzahl Dokumente, ...)
+  GET  /api/status           -> Live-Status des Watchers + Gesamtzahl Dokumente in der DB
 """
 
 import os
@@ -28,11 +28,17 @@ db = client[MONGO_DB]
 col = db["protocols"]
 meta_col = db["scanner_state"]
 
-def build_query(args):
-    """Baut aus den Request-Parametern die MongoDB-Query. Keine Parameter -> {} (alle Dokumente)."""
-    query = {}
-    # ... (Filter wie gehabt) ...
-    return query
+DEFAULT_PAGE_SIZE = 60
+MAX_PAGE_SIZE = 500
+
+
+# --------------------------------------------------------------------------- #
+# Hilfsfunktionen (modulweit, vor allen Routen definiert)
+# --------------------------------------------------------------------------- #
+def _iso(dt):
+    """Wandelt ein datetime-Objekt (oder None) in einen ISO-8601-String (oder None) um."""
+    return dt.isoformat() if dt else None
+
 
 def doc_to_json(doc):
     return {
@@ -71,6 +77,66 @@ def doc_to_json(doc):
     }
 
 
+def build_query(args):
+    """Baut aus den Request-Parametern die MongoDB-Query. Keine Parameter -> {} (alle Dokumente)."""
+    query = {}
+
+    date_from = args.get("date_from", "").strip()
+    date_to = args.get("date_to", "").strip()
+    device = args.get("device", "").strip()
+    seq = args.get("seq", "").strip()
+    name = args.get("name", "").strip()
+    benutzer = args.get("benutzer", "").strip()
+    apotheke = args.get("apotheke", "").strip()
+    pruefergebnis = args.get("pruefergebnis", "").strip()
+    validierung = args.get("validierung", "").strip()
+
+    date_filter = {}
+    if date_from:
+        try:
+            date_filter["$gte"] = datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            date_filter["$lte"] = datetime.strptime(date_to, "%Y-%m-%d")
+        except ValueError:
+            pass
+    if date_filter:
+        query["date"] = date_filter
+
+    if device:
+        query["device_number"] = {"$regex": device, "$options": "i"}
+
+    if seq:
+        query["measurement_seq"] = {"$regex": f"^{seq}$", "$options": "i"}
+
+    if benutzer:
+        query["benutzer"] = {"$regex": benutzer, "$options": "i"}
+
+    if apotheke:
+        query["apotheke"] = {"$regex": apotheke, "$options": "i"}
+
+    if pruefergebnis:
+        query["pruefergebnis"] = {"$regex": pruefergebnis, "$options": "i"}
+
+    if validierung:
+        query["stoffklassenvalidierung"] = {"$regex": f"^{validierung}$", "$options": "i"}
+
+    if name:
+        query["$or"] = [
+            {"measurement_name": {"$regex": name, "$options": "i"}},
+            {"measurement_code": {"$regex": name, "$options": "i"}},
+            {"filename": {"$regex": name, "$options": "i"}},
+            {"stoffklasse": {"$regex": name, "$options": "i"}},
+        ]
+
+    return query
+
+
+# --------------------------------------------------------------------------- #
+# Routen
+# --------------------------------------------------------------------------- #
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -80,8 +146,14 @@ def index():
 def api_search():
     query = build_query(request.args)
 
-    skip = max(int(request.args.get("skip", 0)), 0)
-    limit = min(max(int(request.args.get("limit", DEFAULT_PAGE_SIZE)), 1), MAX_PAGE_SIZE)
+    try:
+        skip = max(int(request.args.get("skip", 0)), 0)
+    except ValueError:
+        skip = 0
+    try:
+        limit = min(max(int(request.args.get("limit", DEFAULT_PAGE_SIZE)), 1), MAX_PAGE_SIZE)
+    except ValueError:
+        limit = DEFAULT_PAGE_SIZE
 
     total_matching = col.count_documents(query)
 
@@ -151,21 +223,25 @@ def api_status():
     state = meta_col.find_one({"_id": "scanner"}) or {}
     total_docs = col.count_documents({})
     return jsonify({
+        # Watcher-Lebenszyklus
         "initial_scan_done": state.get("initial_scan_done", False),
-        "status": state.get("status", "unknown"),
-        "phase": state.get("phase"),
-        "detail": state.get("detail"),
+        "status": state.get("status", "unknown"),         # running | idle | error | unknown
+        "phase": state.get("phase"),                        # initial_scan | incremental_scan
+        "detail": state.get("detail"),                      # Menschenlesbarer Statustext
+        # Fortschritt (nur waehrend Erst-Scan mit sinnvoller Gesamtzahl gefuellt)
         "current_year": state.get("current_year"),
         "current_date_folder": state.get("current_date_folder"),
         "current_file": state.get("current_file"),
         "total_folders": state.get("total_folders"),
         "folders_done": state.get("folders_done"),
         "new_files_this_run": state.get("new_files_this_run"),
+        # Zeitstempel
         "last_run": _iso(state.get("last_run")),
         "next_run": _iso(state.get("next_run")),
         "last_full_scan": _iso(state.get("last_full_scan")),
         "updated_at": _iso(state.get("updated_at")),
         "last_error": state.get("last_error"),
+        # Gesamtzahl Dokumente in der Datenbank
         "total_documents": total_docs,
     })
 
