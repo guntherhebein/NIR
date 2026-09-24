@@ -75,7 +75,7 @@ def update_status(meta_col, **fields):
     fields["updated_at"] = datetime.utcnow()
     meta_col.update_one({"_id": "scanner"}, {"$set": fields}, upsert=True)
 
-    def scan_date_folder(col, year: str, date_folder: str, meta_col=None) -> int:
+def scan_date_folder(col, year: str, date_folder: str, meta_col=None) -> int:
     url = f"{BASE_URL}{year}/{date_folder}/"
     count = 0
     files = list_pdf_files(url)
