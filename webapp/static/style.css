@@ -7,3 +7,6 @@ body { background-color: #f5f6f8; }
 .card-body small.text-muted { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-body .badge { font-size: 0.7rem; }
 #pdfFrame { min-height: 90vh; }
+.status-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+.status-dot.blinking { animation: blink 1.2s ease-in-out infinite; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }

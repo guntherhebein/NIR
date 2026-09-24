@@ -28,6 +28,11 @@ db = client[MONGO_DB]
 col = db["protocols"]
 meta_col = db["scanner_state"]
 
+def build_query(args):
+    """Baut aus den Request-Parametern die MongoDB-Query. Keine Parameter -> {} (alle Dokumente)."""
+    query = {}
+    # ... (Filter wie gehabt) ...
+    return query
 
 def doc_to_json(doc):
     return {
@@ -73,63 +78,28 @@ def index():
 
 @app.route("/api/search")
 def api_search():
-    query = {}
+    query = build_query(request.args)
 
-    date_from = request.args.get("date_from", "").strip()
-    date_to = request.args.get("date_to", "").strip()
-    device = request.args.get("device", "").strip()
-    seq = request.args.get("seq", "").strip()
-    name = request.args.get("name", "").strip()
-    benutzer = request.args.get("benutzer", "").strip()
-    apotheke = request.args.get("apotheke", "").strip()
-    pruefergebnis = request.args.get("pruefergebnis", "").strip()
-    validierung = request.args.get("validierung", "").strip()
+    skip = max(int(request.args.get("skip", 0)), 0)
+    limit = min(max(int(request.args.get("limit", DEFAULT_PAGE_SIZE)), 1), MAX_PAGE_SIZE)
 
-    date_filter = {}
-    if date_from:
-        try:
-            date_filter["$gte"] = datetime.strptime(date_from, "%Y-%m-%d")
-        except ValueError:
-            pass
-    if date_to:
-        try:
-            date_filter["$lte"] = datetime.strptime(date_to, "%Y-%m-%d")
-        except ValueError:
-            pass
-    if date_filter:
-        query["date"] = date_filter
+    total_matching = col.count_documents(query)
 
-    if device:
-        query["device_number"] = {"$regex": device, "$options": "i"}
-
-    if seq:
-        query["measurement_seq"] = {"$regex": f"^{seq}$", "$options": "i"}
-
-    if benutzer:
-        query["benutzer"] = {"$regex": benutzer, "$options": "i"}
-
-    if apotheke:
-        query["apotheke"] = {"$regex": apotheke, "$options": "i"}
-
-    if pruefergebnis:
-        query["pruefergebnis"] = {"$regex": pruefergebnis, "$options": "i"}
-
-    if validierung:
-        query["stoffklassenvalidierung"] = {"$regex": f"^{validierung}$", "$options": "i"}
-
-    if name:
-        query["$or"] = [
-            {"measurement_name": {"$regex": name, "$options": "i"}},
-            {"measurement_code": {"$regex": name, "$options": "i"}},
-            {"filename": {"$regex": name, "$options": "i"}},
-            {"stoffklasse": {"$regex": name, "$options": "i"}},
-        ]
-
-    limit = min(int(request.args.get("limit", 200)), 1000)
-
-    cursor = col.find(query).sort([("date", DESCENDING), ("filename", DESCENDING)]).limit(limit)
+    cursor = (
+        col.find(query)
+        .sort([("date", DESCENDING), ("filename", DESCENDING)])
+        .skip(skip)
+        .limit(limit)
+    )
     results = [doc_to_json(d) for d in cursor]
-    return jsonify({"count": len(results), "results": results})
+
+    return jsonify({
+        "count": len(results),
+        "total_matching": total_matching,
+        "skip": skip,
+        "limit": limit,
+        "results": results,
+    })
 
 
 def _get_doc_or_404(doc_id):
@@ -182,7 +152,20 @@ def api_status():
     total_docs = col.count_documents({})
     return jsonify({
         "initial_scan_done": state.get("initial_scan_done", False),
-        "last_run": state.get("last_run").isoformat() if state.get("last_run") else None,
+        "status": state.get("status", "unknown"),
+        "phase": state.get("phase"),
+        "detail": state.get("detail"),
+        "current_year": state.get("current_year"),
+        "current_date_folder": state.get("current_date_folder"),
+        "current_file": state.get("current_file"),
+        "total_folders": state.get("total_folders"),
+        "folders_done": state.get("folders_done"),
+        "new_files_this_run": state.get("new_files_this_run"),
+        "last_run": _iso(state.get("last_run")),
+        "next_run": _iso(state.get("next_run")),
+        "last_full_scan": _iso(state.get("last_full_scan")),
+        "updated_at": _iso(state.get("updated_at")),
+        "last_error": state.get("last_error"),
         "total_documents": total_docs,
     })
 

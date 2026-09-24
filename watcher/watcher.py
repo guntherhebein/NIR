@@ -70,6 +70,114 @@ FILENAME_PATTERN = re.compile(
 YEAR_PATTERN = re.compile(r"^\d{4}$")
 DATE_PATTERN = re.compile(r"^\d{8}$")
 
+def update_status(meta_col, **fields):
+    """Schreibt/aktualisiert einzelne Felder im Status-Dokument 'scanner'."""
+    fields["updated_at"] = datetime.utcnow()
+    meta_col.update_one({"_id": "scanner"}, {"$set": fields}, upsert=True)
+
+    def scan_date_folder(col, year: str, date_folder: str, meta_col=None) -> int:
+    url = f"{BASE_URL}{year}/{date_folder}/"
+    count = 0
+    files = list_pdf_files(url)
+    for filename, file_url in files:
+        if meta_col is not None:
+            update_status(meta_col, current_file=filename)
+        try:
+            if process_file(col, year, date_folder, filename, file_url):
+                count += 1
+        except Exception:
+            log.error("Fehler bei Verarbeitung von %s/%s/%s:\n%s",
+                       year, date_folder, filename, traceback.format_exc())
+    if meta_col is not None:
+        update_status(meta_col, current_file=None)
+    return count
+
+def scan_date_folder(col, year: str, date_folder: str, meta_col=None) -> int:
+    url = f"{BASE_URL}{year}/{date_folder}/"
+    count = 0
+    files = list_pdf_files(url)
+    for filename, file_url in files:
+        if meta_col is not None:
+            update_status(meta_col, current_file=filename)
+        try:
+            if process_file(col, year, date_folder, filename, file_url):
+                count += 1
+        except Exception:
+            log.error("Fehler bei Verarbeitung von %s/%s/%s:\n%s",
+                       year, date_folder, filename, traceback.format_exc())
+    if meta_col is not None:
+        update_status(meta_col, current_file=None)
+    return count
+
+def full_scan(col, meta_col) -> int:
+    log.info("Starte vollstaendigen Erst-Scan aller Jahre/Tage unter %s ...", BASE_URL)
+    update_status(
+        meta_col,
+        phase="initial_scan",
+        status="running",
+        detail="Ermittle Verzeichnisstruktur (Jahre/Tage) ...",
+        current_year=None,
+        current_date_folder=None,
+        current_file=None,
+    )
+
+    targets = []
+    for year in sorted(list_dirs(BASE_URL)):
+        if not YEAR_PATTERN.match(year):
+            continue
+        year_url = f"{BASE_URL}{year}/"
+        for date_folder in sorted(list_dirs(year_url)):
+            if not DATE_PATTERN.match(date_folder):
+                continue
+            targets.append((year, date_folder))
+
+    total_folders = len(targets)
+    update_status(meta_col, total_folders=total_folders, folders_done=0, new_files_this_run=0)
+
+    total_new = 0
+    for idx, (year, date_folder) in enumerate(targets, start=1):
+        update_status(
+            meta_col,
+            current_year=year,
+            current_date_folder=date_folder,
+            detail=f"Erst-Scan: {year}/{date_folder} (Ordner {idx}/{total_folders})",
+        )
+        total_new += scan_date_folder(col, year, date_folder, meta_col=meta_col)
+        update_status(meta_col, folders_done=idx, new_files_this_run=total_new)
+
+    update_status(
+        meta_col,
+        detail=f"Erst-Scan abgeschlossen ({total_new} neue Datei(en))",
+        current_year=None, current_date_folder=None, current_file=None,
+    )
+    log.info("Erst-Scan abgeschlossen. %d neue Dateien verarbeitet.", total_new)
+    return total_new
+
+def incremental_scan(col, meta_col) -> int:
+    update_status(
+        meta_col, phase="incremental_scan", status="running",
+        detail="Pruefe aktuelle(s) Datum/Tage auf neue Dateien ...", new_files_this_run=0,
+    )
+    total = 0
+    today = date.today()
+    for offset in range(RECHECK_DAYS):
+        d = today - timedelta(days=offset)
+        year = d.strftime("%Y")
+        date_folder = d.strftime("%Y%m%d")
+        update_status(
+            meta_col, current_year=year, current_date_folder=date_folder,
+            detail=f"Pruefe {year}/{date_folder} auf neue Dateien ...",
+        )
+        total += scan_date_folder(col, year, date_folder, meta_col=meta_col)
+        update_status(meta_col, new_files_this_run=total)
+
+    update_status(
+        meta_col, detail=f"Letzter Scan abgeschlossen ({total} neue Datei(en))",
+        current_year=None, current_date_folder=None, current_file=None,
+    )
+    return total
+
+
 
 def parse_filename(filename: str):
     m = FILENAME_PATTERN.match(filename)
@@ -251,47 +359,6 @@ def process_file(col, year: str, date_folder: str, filename: str, file_url: str)
     return True
 
 
-def scan_date_folder(col, year: str, date_folder: str) -> int:
-    url = f"{BASE_URL}{year}/{date_folder}/"
-    count = 0
-    for filename, file_url in list_pdf_files(url):
-        try:
-            if process_file(col, year, date_folder, filename, file_url):
-                count += 1
-        except Exception:
-            log.error("Fehler bei Verarbeitung von %s/%s/%s:\n%s",
-                       year, date_folder, filename, traceback.format_exc())
-    return count
-
-
-def full_scan(col) -> int:
-    log.info("Starte vollstaendigen Erst-Scan aller Jahre/Tage unter %s ...", BASE_URL)
-    total = 0
-    for year in sorted(list_dirs(BASE_URL)):
-        if not YEAR_PATTERN.match(year):
-            continue
-        year_url = f"{BASE_URL}{year}/"
-        for date_folder in sorted(list_dirs(year_url)):
-            if not DATE_PATTERN.match(date_folder):
-                continue
-            total += scan_date_folder(col, year, date_folder)
-    log.info("Erst-Scan abgeschlossen. %d neue Dateien verarbeitet.", total)
-    return total
-
-
-def incremental_scan(col) -> int:
-    """Prueft nur die letzten RECHECK_DAYS Tage (Standard: heute + 1 Tag zurueck)."""
-    total = 0
-    today = date.today()
-    for offset in range(RECHECK_DAYS):
-        d = today - timedelta(days=offset)
-        year = d.strftime("%Y")
-        date_folder = d.strftime("%Y%m%d")
-        total += scan_date_folder(col, year, date_folder)
-    if total:
-        log.info("Inkrementeller Scan: %d neue Dateien verarbeitet.", total)
-    return total
-
 
 def main():
     mongo = MongoClient(MONGO_URI)
@@ -307,24 +374,25 @@ def main():
     while True:
         try:
             if not initial_scan_done:
-                full_scan(col)
+                full_scan(col, meta_col)
                 initial_scan_done = True
-                meta_col.update_one(
-                    {"_id": "scanner"},
-                    {"$set": {"initial_scan_done": True, "last_full_scan": datetime.utcnow()}},
-                    upsert=True,
-                )
+                update_status(meta_col, initial_scan_done=True, last_full_scan=datetime.utcnow())
             else:
-                incremental_scan(col)
+                incremental_scan(col, meta_col)
 
-            meta_col.update_one(
-                {"_id": "scanner"},
-                {"$set": {"last_run": datetime.utcnow()}},
-                upsert=True,
+            next_run = datetime.utcnow() + timedelta(seconds=POLL_INTERVAL_SECONDS)
+            update_status(
+                meta_col, status="idle", last_run=datetime.utcnow(),
+                next_run=next_run, last_error=None,
             )
 
         except Exception:
-            log.error("Unerwarteter Fehler im Scan-Zyklus:\n%s", traceback.format_exc())
+            err_text = traceback.format_exc()
+            log.error("Unerwarteter Fehler im Scan-Zyklus:\n%s", err_text)
+            update_status(
+                meta_col, status="error", detail="Fehler im Scan-Zyklus (siehe Logs)",
+                last_error=str(err_text).splitlines()[-1] if err_text else "unbekannter Fehler",
+            )
 
         time.sleep(POLL_INTERVAL_SECONDS)
 

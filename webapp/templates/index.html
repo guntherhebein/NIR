@@ -95,6 +95,28 @@
   </div>
 </div>
 
+<div class="text-center mt-4 mb-4"></div>
+  <button type="button" id="loadMoreBtn" class="btn btn-outline-primary d-none">Weitere Dokumente laden</button>
+</div>
+
+<div id="statusPanel" class="card mb-4 shadow-sm"></div>
+  <div class="card-body py-2 px-3">
+    <div class="d-flex align-items-center flex-wrap gap-3">
+      <div class="d-flex align-items-center gap-2">
+        <span id="statusDot" class="status-dot bg-secondary"></span>
+        <span id="statusDetail" class="fw-semibold">Status wird geladen ...</span>
+      </div>
+      <div id="statusProgressWrap" class="flex-grow-1 d-none" style="min-width:200px;">
+        <div class="progress" style="height: 8px;">
+          <div id="statusProgressBar" class="progress-bar" role="progressbar" style="width:0%"></div>
+        </div>
+      </div>
+      <span id="statusExtra" class="text-muted small"></span>
+      <span class="ms-auto badge bg-primary fs-6" id="totalDocsBadge">... Dokumente in der Datenbank</span>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="/static/app.js"></script>
 </body>

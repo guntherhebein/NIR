@@ -10,7 +10,101 @@ const pdfModalTitle = document.getElementById('pdfModalTitle');
 const pdfModalSubtitle = document.getElementById('pdfModalSubtitle');
 const downloadLink = document.getElementById('downloadLink');
 const printBtn = document.getElementById('printBtn');
+const PAGE_SIZE = 60;
+let currentSkip = 0;
+let currentTotalMatching = 0;
 
+async function doSearch(reset = true) {
+  if (reset) {
+    currentSkip = 0;
+    resultsEl.innerHTML = '';
+  }
+
+  const params = currentSearchParams();
+  params.set('skip', currentSkip);
+  params.set('limit', PAGE_SIZE);
+
+  const res = await fetch('/api/search?' + params.toString());
+  const data = await res.json();
+
+  currentTotalMatching = data.total_matching;
+
+  if (reset && data.results.length === 0) {
+    resultsEl.innerHTML = '<div class="col-12 text-muted">Keine Ergebnisse gefunden.</div>';
+  } else {
+    for (const item of data.results) {
+      resultsEl.appendChild(renderCard(item));
+    }
+  }
+
+  currentSkip += data.results.length;
+
+  const shown = resultsEl.querySelectorAll('.result-card').length;
+  resultCountEl.textContent = `Zeige ${shown} von ${data.total_matching} Dokument(en)`;
+
+  if (currentSkip < data.total_matching) {
+    loadMoreBtn.classList.remove('d-none');
+  } else {
+    loadMoreBtn.classList.add('d-none');
+  }
+}
+
+loadMoreBtn.addEventListener('click', () => {
+  doSearch(false);
+});
+
+// --- Live-Status-Panel (pollt den Watcher-Fortschritt alle 4s) ---
+function statusBadgeInfo(status) {
+  switch (status) {
+    case 'running': return { cls: 'bg-success blinking', label: 'Läuft' };
+    case 'idle': return { cls: 'bg-secondary', label: 'Wartet' };
+    case 'error': return { cls: 'bg-danger', label: 'Fehler' };
+    default: return { cls: 'bg-secondary', label: 'Unbekannt' };
+  }
+}
+
+async function pollStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const s = await res.json();
+
+    const info = statusBadgeInfo(s.status);
+    statusDot.className = 'status-dot ' + info.cls;
+
+    let detailText = s.detail || (s.status === 'idle' ? 'Wartet auf nächsten Lauf' : '...');
+    if (s.current_year && s.current_date_folder) {
+      detailText += ` (${s.current_year}/${s.current_date_folder}${s.current_file ? ' – ' + s.current_file : ''})`;
+    }
+    statusDetail.textContent = detailText;
+
+    let extraParts = [];
+    if (s.status === 'idle' && s.last_run) extraParts.push(`Letzter Lauf: ${formatDateTime(s.last_run)}`);
+    if (s.status === 'idle' && s.next_run) extraParts.push(`Nächster Lauf: ${formatDateTime(s.next_run)}`);
+    if (typeof s.new_files_this_run === 'number' && s.new_files_this_run > 0) {
+      extraParts.push(`Neue Dateien in diesem Lauf: ${s.new_files_this_run}`);
+    }
+    if (s.status === 'error' && s.last_error) extraParts.push(`Fehler: ${s.last_error}`);
+    statusExtra.textContent = extraParts.join(' · ');
+
+    if (s.phase === 'initial_scan' && s.total_folders) {
+      statusProgressWrap.classList.remove('d-none');
+      const pct = Math.min(100, Math.round((s.folders_done / s.total_folders) * 100));
+      statusProgressBar.style.width = pct + '%';
+      statusProgressBar.textContent = `${s.folders_done}/${s.total_folders}`;
+    } else {
+      statusProgressWrap.classList.add('d-none');
+    }
+
+    totalDocsBadge.textContent = `${s.total_documents.toLocaleString('de-DE')} Dokumente in der Datenbank`;
+  } catch (e) {
+    statusDetail.textContent = 'Status konnte nicht geladen werden';
+    statusDot.className = 'status-dot bg-danger';
+  }
+}
+
+doSearch(true);
+pollStatus();
+setInterval(pollStatus, 4000);
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
   return String(str)
