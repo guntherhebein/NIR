@@ -11,8 +11,9 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DB}
     volumes:
       - mongo-data:/data/db
-    ports:
-      - "27017:27017"   # optional, kann entfernt werden wenn kein externer Zugriff nötig
+    #ports:
+    #  - "27017:27017"   # optional, kann entfernt werden wenn kein externer Zugriff nötig
+    # brauch ma nicht, weil eh nur intern
     networks:
       - backend
     healthcheck:
